@@ -1,8 +1,11 @@
 use std::env;
 use std::error::Error;
-use std::fs;
 use std::fs::DirEntry;
+use std::fs::{self, File};
+use std::io::{Read, Write};
 use std::path::PathBuf;
+
+use flate2::read::GzDecoder;
 
 const IN_DIR: &str = "./in";
 const OUT_DIR: &str = "./out";
@@ -31,7 +34,26 @@ fn extract_input_files() {
     for entry in in_dir_info {
         let path = entry.unwrap().path();
         if has_extension(&path, "gz") {
-            println!("Extracting File: {}", path.display())
+            println!("Extracting File: {}", path.display());
+
+            // Open file to extract
+            let file = File::open(&path).unwrap();
+            let mut decoder = GzDecoder::new(file);
+
+            // Create output file for extraction
+            let file_name = path.file_stem().unwrap().to_str().unwrap();
+            let out_file_path = IN_DIR.to_owned() + "/" + file_name;
+            let mut out_file = File::create(out_file_path).unwrap();
+
+            // Write extracted data into file
+            let mut buffer = [0; 4096];
+            loop {
+                match decoder.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => out_file.write_all(&buffer[..n]).unwrap(),
+                    Err(e) => panic!("Error while decompressing file: {:?}", e),
+                }
+            }
         }
     }
 }
@@ -61,13 +83,16 @@ fn parse_file_contents(entry: &std::fs::DirEntry) {
     }
 
     let path = entry.path();
-    let path_name = path.display();
+    let path_name = path.display().to_string();
 
-    if has_extension(&path, "txt") {
+    if has_extension(&path, "log") {
         println!("Parsing File: {path_name}");
 
         // Get file contents
-        // let contents = fs::read_to_string(path_name).unwrap();
-        // println!("{contents} \n======================================")
+        let mut file = File::open(path_name).unwrap();
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer);
+        let contents = String::from_utf8_lossy(&buffer).into_owned();
+        println!("{contents} \n======================================")
     }
 }
