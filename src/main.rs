@@ -1,3 +1,4 @@
+use dotenv::dotenv;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -5,10 +6,16 @@ use std::path::PathBuf;
 use flate2::read::GzDecoder;
 use regex::Regex;
 
+use reqwest;
+use serde_json::json;
+
 const IN_DIR: &str = "./in";
 const OUT_DIR: &str = "./out";
 
 fn main() {
+    // Grab api key
+    dotenv().ok();
+
     // Setup Directories For Processing
     extract_input_files();
     clear_out_directory();
@@ -77,7 +84,8 @@ fn process_logs() {
         if has_extension(&path, "log") {
             let contents = parse_file_contents(&entry);
             let filtered = filter_log_messages(&contents);
-            save_log(&entry, &filtered);
+            let summary = get_openai_summary(&filtered);
+            save_log(&entry, &summary);
         }
     }
 }
@@ -120,6 +128,62 @@ fn filter_log_messages(messages: &str) -> String {
 
 fn is_info_msg(msg: &str) -> bool {
     return msg.contains("[Server thread/INFO]");
+}
+
+#[tokio::main]
+async fn get_openai_summary(filtered: &str) -> String {
+    // Get api key
+    let api_key = match std::env::var("API_KEY") {
+        Ok(key) => key,
+        Err(e) => panic!("No API Key Found!"),
+    };
+    println!("Your api key is: {api_key}");
+
+    // Create prompt question
+    let prompt_question = "Filter the log to only keep time, player chat, player events and player commands. Ignore thirst and disease. \n";
+
+    // Parameters for request
+    let url = "https://api.openai.com/v1/completions";
+    let client = reqwest::Client::new();
+
+    // Paramaters to break up large input
+    let max_total_tokens = 2048;
+    let input_size_increments = max_total_tokens / 2 - prompt_question.len();
+    let output_size_increments = max_total_tokens - input_size_increments;
+    let mut curr_input_pos = 0;
+    let mut result = String::from("");
+
+    while curr_input_pos < filtered.len() {
+        // get substring
+        let start = curr_input_pos;
+        curr_input_pos += input_size_increments; // Half for prompt, half for response
+        curr_input_pos = usize::min(filtered.len(), curr_input_pos);
+        let prompt = prompt_question.to_owned() + &filtered[start..curr_input_pos];
+
+        // Send prompt
+        let response = client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&json!({
+                "prompt": prompt,
+                "max_tokens": output_size_increments,
+                "model": "text-davinci-003"
+            }))
+            .send()
+            .await;
+
+        let json = response.unwrap().json::<serde_json::Value>().await.unwrap();
+
+        let summary = json["choices"][0]["text"].as_str();
+
+        if summary.is_none() {
+            println!("{:#?}", json);
+        }
+        result += summary.unwrap_or("");
+    }
+
+    return result;
 }
 
 fn save_log(entry: &std::fs::DirEntry, log: &str) {
